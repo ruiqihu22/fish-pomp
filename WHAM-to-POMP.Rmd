@@ -1,0 +1,281 @@
+---
+title: "wham to pump"
+output:
+  pdf_document: default
+  html_document: default
+date: "2025-09-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Latent state \(X_n\)
+
+- In WHAM, the hidden states are the **numbers at age (NAA):**
+
+\[
+X_n = (N_{1,n}, N_{2,n}, \dots, N_{A,n})
+\]
+
+- \(N_{a,n}\): number of fish of age \(a\) in year \(n\).  
+- These are unobserved (not directly measured), so they form the **latent Markov process** in the POMP model.
+
+
+# 2. Observations \(Y_n\)
+
+- The observed data in WHAM are fishery and survey data, such as:
+  - Total catch  
+  - Survey abundance indices  
+  - Age composition of catch and indices  
+
+- These are modeled via the **measurement process**:
+
+\[
+Y_n \sim f_{Y|X}( \cdot \mid X_n, \theta)
+\]
+
+For example, expected catch is calculated with the **Baranov catch equation**, then observed with **lognormal error**.
+
+
+# 3. State transition distribution \(f_{X_n|X_{n-1}}\)
+
+- In WHAM, this is given by the **population dynamics equations**:
+
+- **Recruitment (new age-1 fish):**
+
+\[
+N_{1,n} \sim f(\text{SSB}_{n-1}) \cdot e^{\varepsilon_{1,n}}
+\]
+
+e.g. Beverton–Holt or Ricker stock–recruit relationship with random effects.
+
+- **Survival / aging:**
+
+\[
+N_{a,n} = N_{a-1,n-1}\, e^{-Z_{a-1,n-1}} \cdot e^{\varepsilon_{a,n}}, \quad a>1
+\]
+
+where \(Z = F + M\) is total mortality.
+
+- This defines the **Markov transition probabilities** in the POMP model.
+
+## 4. Measurement Model
+
+The predicted *aggregate catch* for fleet/index \(i\) in year \(y\) is
+
+\[
+\widehat{C}_{y,i} = \sum_a \widehat{C}_{a,y,i} \, W_{a,y,i},
+\]
+
+where \(W_{a,y,i}\) is the empirical weight–at–age.
+
+We assume the observed catch \(C_{y,i}\) follows a **lognormal distribution**:
+
+\[
+\log(C_{y,i}) \sim \mathcal{N}\!\left(
+\log(\widehat{C}_{y,i}) - \tfrac{\sigma^2_{C,y,i}}{2},\;
+\sigma^2_{C,y,i}
+\right).
+\]
+
+The observation error standard deviation is parameterized as
+
+\[
+\sigma_{C,y,i} \;=\; e^{\eta_i}\,\tilde{\sigma}_{C,y,i},
+\]
+
+where \(\eta_i\) is a fleet/index-specific scaling parameter and  
+\(\tilde{\sigma}_{C,y,i}\) is a baseline standard deviation.
+
+# 5. Parameters \(\theta\)
+
+- In WHAM, \(\theta\) includes:
+  - Stock–recruit parameters (\(\alpha, \beta\))  
+  - Selectivity parameters (e.g., logistic curve parameters)  
+  - Natural mortality \(M\)  
+  - Observation error variances (\(\tau_C, \tau_I\))  
+
+
+# 6. Full joint density (POMP representation of WHAM)
+
+The WHAM model fits directly into the POMP framework as:
+
+\[
+f_{X_{0:N},Y_{1:N}}(x_{0:N},y_{1:N};\theta)
+= f_{X_0}(x_0;\theta) \prod_{n=1}^N f_{X_n|X_{n-1}}(x_n|x_{n-1};\theta)\, f_{Y_n|X_n}(y_n|x_n;\theta).
+\]
+
+- **State transitions** = population dynamics equations  
+- **Measurements** = catch and survey observation models  
+- **Parameters** = biological + observation parameters  
+
+# 7. Initial Conditions to WHAM
+
+## Concept mapping
+- **POMP**: specify an initial distribution for the latent state,
+  \[
+  f_{X_0}(x_0;\theta).
+  \]
+- **WHAM (NAA model)**: the first-year numbers–at–age vector
+  \[
+  X_0 \equiv (N_{1,y_0},\ldots,N_{A,y_0})
+  \]
+  is typically **unknown**. In practice, WHAM estimates the components
+  \(\log N_{a,y_0}\) as parameters—equivalently, \(f_{X_0}\) is a **point mass**
+  (degenerate initial distribution).
+
+## Common choices in WHAM
+1. **Fixed initial values** (when justified by external information).  
+2. **Stationary/equilibrium initialization** (when the transition model is time-homogeneous with a unique stationary distribution and there is a scientific rationale).  
+3. **Estimate \(\log N_{a,y_0}\) as parameters** (most common; equals a point-mass \(f_{X_0}\) in POMP).
+
+**Plus group**: the initial vector includes \(N_{A,y_0}\); aging then uses the standard plus-group accumulation.
+
+
+# 8. Covariates (Ecov) to WHAM
+
+## Concept mapping
+- **POMP**: an external process \(\{Z(t)\}\) may enter the **state transition**
+  \(f_{X_n|X_{n-1}}\) and/or the **measurement** model \(f_{Y_n|X_n}\).
+- **WHAM**: environmental covariates (e.g., **CPI**) are often modeled as a
+  **random walk** or **AR(1)** latent series \(X^{\text{ecov}}_y\), then linked
+  with a **lag** \(\psi\) to population dynamics:
+
+### Recruitment impact
+- \(N_{1,y}\) depends on \(X^{\text{ecov}}_{y-\psi}\).
+
+**Controlling (productivity/mean shift)**, e.g. Beverton–Holt with ecov:
+\[
+R_y = \frac{\alpha\,\exp\!\big(\beta\,X_{y-\psi}\big)\,SSB_{y-1}}
+           {1+\beta_2\,SSB_{y-1}}.
+\]
+
+**Limiting (capacity/ceiling effect)**:
+- modify the BH capacity term with a function of \(X_{y-\psi}\), or
+- in Ricker, add ecov to the negative density term, e.g.
+  \(\log R_y = \log \alpha + \log SSB_{y-1} - (\beta_0+\beta_2 X_{y-\psi})\,SSB_{y-1}\).
+
+### Natural mortality impact
+Allow ecov to affect \(M\):
+\[
+\log M_{a,y} = \mu_{M,a} + \gamma\,X_{y-\psi}.
+\]
+
+Multiple covariates are allowed; each can have its **own process** and **link**.
+
+# In short
+
+Recasting WHAM as a POMP means:
+
+- **NAA** = latent states (\(X_n\))  
+- **Fishery/survey data** = observations (\(Y_n\))  
+- **Population dynamics** = transition model  
+- **Catch equations + survey error** = measurement model  
+
+## Classification of WHAM quantities in POMP terms
+
+| Quantity                               | Type                     | Notes |
+|----------------------------------------|--------------------------|-------|
+| Numbers-at-age (NAA), \(N_{a,n}\)      | **Latent state**         | Hidden Markov process; survival + recruitment |
+| Recruitment, \(N_{1,n}\)               | Latent state             | First element of NAA each year |
+| Fishing mortality, \(F_n\), \(s_a\)    | Parameter (often w/ RE)  | \(F_n\) fully selected F (time-varying); \(s_a\) selectivity-at-age |
+| Natural mortality, \(M_a\)             | Parameter                | Age-specific, constant, or ecov-linked |
+| Weights-at-age, \(w_a\)                | Data / fixed covariate   | Biological input, not estimated |
+| Maturity-at-age, \(\text{mat}_a\)      | Data / fixed covariate   | Biological input, not estimated |
+| Spawning stock biomass (SSB)           | **Derived variable**     | \(\mathrm{SSB}_n=\sum_a N_{a,n} w_a\,\text{mat}_a\) |
+
+
+
+## WHAM: Nonlinear Mixed-Effects State-Space Model
+
+# 1. Parameter Layer
+
+**Fixed effects ($\beta$):**
+- $\alpha, \beta$ → Beverton–Holt or Ricker stock–recruit parameters  
+- $\mu_{M_a}$ → mean natural mortality  
+- $\nu_1, \nu_2$ → mean selectivity parameters $(a_{50}, k)$  
+- $q$ → catchability  
+- $\phi_X, \mu_X$ → mean and autocorrelation for environmental covariate  
+
+**Random effects ($\eta \sim \mathcal{N}(0, G)$):**
+- $\varepsilon_{a,y}$ → NAA process deviations (recruitment / abundance)  
+- $\delta_{a,y}$ → natural mortality deviations (log $M$)  
+- $\zeta_{p,y}$ → selectivity parameter deviations (logit-scale)  
+- $\omega_y$ → environmental innovations (Ecov process)
+
+---
+
+# 2. State Process Layer
+
+- $\log N_{a,y} \;=\; f\!\big(N_{a-1,y-1},\, F,\, M,\, \mathrm{SSB}\big) \;+\; \varepsilon_{a,y}$
+- $\log M_{a,y} \;=\; \mu_{M_a} \;+\; \delta_{a,y}$
+- $\operatorname{logit}(a_{50,y}) \;=\; \nu_{1} \;+\; \zeta_{1,y}$
+- $\operatorname{logit}(k_{y}) \;=\; \nu_{2} \;+\; \zeta_{2,y}$
+- $X_{y} \;=\; \mu_{X}\,(1-\phi_{X}) \;+\; \phi_{X}\,X_{y-1} \;+\; \omega_{y}$
+
+---
+
+# 3. Observation Layer
+
+Catch, survey, and age–composition data are modeled as:
+
+- $\log C_{y,i} \;\sim\; \mathcal{N}\!\big(\log \widehat{C}_{y,i},\, \tau_{C}^{2}\big)$
+- $\log I_{y,i} \;\sim\; \mathcal{N}\!\big(\log \widehat{I}_{y,i},\, \tau_{I}^{2}\big)$
+
+**Age compositions:**
+
+
+**Logistic–normal (overdispersed comps)**
+- Latent logits $\boldsymbol{\ell}_{y,i} \sim \mathcal{N}\!\big(\boldsymbol{\mu}_{y,i},\, \Sigma\big)$  
+- Proportions from softmax:  
+  $p_{a,y,i} \;=\; \dfrac{\exp(\ell_{a,y,i})}{\sum_{a'=1}^{A}\exp(\ell_{a',y,i})}$
+  
+
+### 4. Estimation / Fitting (TMB Framework)
+
+-  Optimize fixed effects ($\beta$)  
+-  Integrate random effects ($\eta$) by Laplace approximation  
+-  Obtain marginal likelihood L($\beta$, $\sigma^2$, $\rho$) 
+
+
+##  Mathematical Representation
+
+WHAM can be written as a nonlinear mixed-effects model on link scales:
+
+\[
+\text{Linear predictor} = X\beta + Z\eta + \varepsilon
+\]
+
+where
+
+\[
+\eta =
+\begin{bmatrix}
+\varepsilon_{a,y}\\[4pt]
+\delta_{a,y}\\[4pt]
+\zeta_{p,y}\\[4pt]
+\omega_y
+\end{bmatrix}
+\sim \mathcal N(0,G)
+\]
+
+- \(Z\): incidence matrix, determining which random effects enter each equation  
+- \(\eta\): vector of Gaussian random deviations  
+- \(G\): covariance structure describing correlation across age, year, or parameters
+
+
+##  Random-Effect Components and Covariance Structures
+
+| Component | Symbol | Meaning | Covariance \(G_i\) Structure |
+|------------|---------|----------|------------------------------|
+| **NAA process deviations** | \(\varepsilon_{a,y}\) | recruitment or abundance year-to-year variation | IID / AR(1) / 2D-AR(1) |
+| **Natural mortality deviations** | \(\delta_{a,y}\) | smooth variation of log M over age & year | IID / 2D-AR(1) |
+| **Selectivity parameter deviations** | \(\zeta_{p,y}\) | temporal changes in selectivity curve parameters | IID / parameter×year 2D-AR(1) |
+| **Environmental innovations** | \(\omega_y\) | stochastic evolution of environmental covariate | random walk / AR(1) |
+
+All components combine as a block-diagonal covariance matrix:
+
+\[
+G = \text{blockdiag}(G_{\text{NAA}},\,G_M,\,G_{\text{Sel}},\,G_{\text{Ecov}}).
+\]

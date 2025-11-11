@@ -1,0 +1,85 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+# **WHAM to POMP Model: Essential Formulas**
+
+## **STATE VARIABLES**
+
+State vector: $\mathbf{X}_t = [N_{1,t}, N_{2,t}, ..., N_{A,t}, \text{SSB}_t]^T$
+
+- $N_{a,t}$ = Numbers at age $a$ in year $t$
+- $\text{SSB}_t$ = Spawning stock biomass
+- $A$ = Maximum age (plus group)
+
+
+## **PROCESS MODEL** (Population Dynamics)
+
+### **Recruitment** (Age 1)
+$$N_{1,t} = \frac{\alpha \cdot \text{SSB}_{t-1}}{1 + \beta \cdot \text{SSB}_{t-1}} \cdot \exp(\epsilon_t), \quad \epsilon_t \sim \mathcal{N}(0, \sigma_R^2)$$
+
+### **Survival & Aging** (Ages 2 to $A-1$)
+$$N_{a,t} = N_{a-1,t-1} \cdot e^{-Z_{a-1,t-1}}$$
+
+### **Plus Group** (Age $A$)
+$$N_{A,t} = N_{A-1,t-1} \cdot e^{-Z_{A-1,t-1}} + N_{A,t-1} \cdot e^{-Z_{A,t-1}}$$
+
+### **Total Mortality**
+$$Z_{a,t} = M + F_t \cdot s_a$$
+
+### **Spawning Stock Biomass**
+$$\text{SSB}_t = \sum_{a=1}^{A} N_{a,t} \cdot w_a \cdot m_a$$
+
+
+## **MEASUREMENT MODEL** (Observations)
+
+### **Catch** (Baranov Equation)
+$$\hat{C}_t = \sum_{a=1}^{A} N_{a,t} \cdot \frac{F_t \cdot s_a}{Z_{a,t}} \cdot (1 - e^{-Z_{a,t}}) \cdot w_a$$
+
+$$\log(C_t) \sim \mathcal{N}(\log(\hat{C}_t), \sigma_C^2)$$
+
+### **Survey Index**
+$$\hat{I}_t = q \sum_{a=1}^{A} s_a \cdot N_{a,t}$$
+
+$$\log(I_t) \sim \mathcal{N}(\log(\hat{I}_t), \sigma_I^2)$$
+
+
+## **PARAMETERS**
+
+| Parameter | Description | Transform |
+|-----------|-------------|-----------|
+| $\alpha$ | BH recruitment capacity | $\log(\alpha)$ |
+| $\beta$ | BH density dependence | $\log(\beta)$ |
+| $\sigma_R$ | Recruitment SD | identity |
+| $F$ | Fishing mortality | $\log(F)$ |
+| $q$ | Catchability | $\log(q)$ |
+| $N_{1,1}$ | Initial abundance | $\log(N_{1,1})$ |
+
+**Fixed parameters**: $M$ (natural mortality), $w_a$ (weight), $m_a$ (maturity), $s_a$ (selectivity)
+
+
+## **SELECTIVITY**
+
+Logistic:
+$$s_a = \frac{1}{1 + e^{-\gamma(a - a_{50})}}$$
+
+
+## **INITIAL CONDITIONS**
+
+Equilibrium with $F_0 = 0.1$:
+
+$$N_{1,1} = \exp(\log N_{1,1})$$
+
+$$N_{a,1} = N_{a-1,1} \cdot e^{-(M + F_0 \cdot s_{a-1})}, \quad 2 \leq a < A$$
+
+$$N_{A,1} = \frac{N_{A-1,1} \cdot e^{-(M + F_0 \cdot s_{A-1})}}{1 - e^{-(M + F_0 \cdot s_A)}}$$
+
+
+## **LIKELIHOOD**
+
+$$\log \mathcal{L}(\boldsymbol{\theta}) = \sum_{t=1}^{T} \left[-\frac{[\log C_t - \log \hat{C}_t]^2}{2\sigma_C^2} - \frac{[\log I_t - \log \hat{I}_t]^2}{2\sigma_I^2}\right]$$
+
+

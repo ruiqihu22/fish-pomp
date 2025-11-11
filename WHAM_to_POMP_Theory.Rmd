@@ -1,0 +1,466 @@
+---
+title: "WHAM to POMP Model Translation: Theoretical Formulation"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    theme: cosmo
+    highlight: tango
+    math_method: katex
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{amssymb}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(knitr)
+```
+
+
+# Model Overview
+
+## WHAM Model Structure
+
+WHAM is a state-space stock assessment model that incorporates:
+
+- Age-structured population dynamics
+- Beverton-Holt stock-recruitment relationship
+- Fishing and natural mortality
+- Multiple data sources (catch, survey indices, age compositions)
+- Environmental covariates (optional)
+
+## POMP Framework
+
+POMP represents the system as:
+
+$$\mathbf{X}_t = f(\mathbf{X}_{t-1}, \boldsymbol{\theta}, \boldsymbol{\epsilon}_t)$$
+$$\mathbf{Y}_t = g(\mathbf{X}_t, \boldsymbol{\theta}, \boldsymbol{\eta}_t)$$
+
+where:
+
+- $\mathbf{X}_t$ = state variables (unobserved)
+- $\mathbf{Y}_t$ = observations
+- $\boldsymbol{\theta}$ = parameters
+- $\boldsymbol{\epsilon}_t, \boldsymbol{\eta}_t$ = process and observation errors
+
+
+# State Variables
+
+## Notation
+
+| Symbol | Description | Dimension |
+|--------|-------------|-----------|
+| $N_{a,t}$ | Numbers at age $a$ in year $t$ | Ages $\times$ Years |
+| $\text{SSB}_t$ | Spawning stock biomass in year $t$ | Years |
+| $A$ | Maximum age (plus group) | Scalar |
+| $T$ | Total number of years | Scalar |
+
+## State Vector
+
+The complete state at time $t$ is:
+
+$$\mathbf{X}_t = \begin{bmatrix} N_{1,t} \\ N_{2,t} \\ \vdots \\ N_{A,t} \\ \text{SSB}_t \end{bmatrix}$$
+
+
+
+# Parameters
+
+## Parameter Vector
+
+$$\boldsymbol{\theta} = \begin{bmatrix} \alpha \\ \beta \\ \sigma_R \\ F \\ q \\ N_{1,1} \end{bmatrix}$$
+
+where:
+
+| Parameter | Description | Transform | Domain |
+|-----------|-------------|-----------|--------|
+| $\alpha$ | Beverton-Holt recruitment capacity | $\log(\alpha)$ | $(0, \infty)$ |
+| $\beta$ | Beverton-Holt density dependence | $\log(\beta)$ | $(0, \infty)$ |
+| $\sigma_R$ | Recruitment standard deviation | Identity | $(0, \infty)$ |
+| $F$ | Fishing mortality | $\log(F)$ | $(0, \infty)$ |
+| $q$ | Catchability coefficient | $\log(q)$ | $(0, 1)$ |
+| $N_{1,1}$ | Initial abundance at age 1 | $\log(N_{1,1})$ | $(0, \infty)$ |
+
+## Biological Parameters (Fixed)
+
+| Parameter | Description | Typical Values |
+|-----------|-------------|----------------|
+| $m_a$ | Maturity at age $a$ | $[0, 1]$ |
+| $w_a$ | Weight at age $a$ (kg) | $[0.1, 2.5]$ |
+| $s_a$ | Selectivity at age $a$ | $[0, 1]$ |
+| $M$ | Natural mortality | $0.2$ |
+
+
+# Process Model (rprocess)
+
+## Population Dynamics
+
+The process model describes how the state evolves from time $t-1$ to $t$.
+
+### 1. Recruitment (Age 1)
+
+**Beverton-Holt Stock-Recruitment:**
+
+$$N_{1,t} = \frac{\alpha \cdot \text{SSB}_{t-1}}{1 + \beta \cdot \text{SSB}_{t-1}} \cdot \exp(\epsilon_{R,t})$$
+
+where:
+
+$$\epsilon_{R,t} \sim \mathcal{N}(0, \sigma_R^2)$$
+
+**Process noise:** Recruitment has log-normal variability:
+
+$$N_{1,t} \sim \text{LogNormal}\left(\log\left[\frac{\alpha \cdot \text{SSB}_{t-1}}{1 + \beta \cdot \text{SSB}_{t-1}}\right], \sigma_R^2\right)$$
+
+### 2. Survival and Aging (Ages 2 to $A-1$)
+
+For intermediate ages ($2 \leq a < A$):
+
+$$N_{a,t} = N_{a-1,t-1} \cdot S_{a-1,t-1}$$
+
+where survival is:
+
+$$S_{a,t} = \exp(-Z_{a,t})$$
+
+and total mortality is:
+
+$$Z_{a,t} = M + F_t \cdot s_a$$
+
+**Components:**
+
+- $M$ = natural mortality (constant)
+- $F_t \cdot s_a$ = fishing mortality at age $a$
+- $s_a$ = selectivity at age $a$
+
+### 3. Plus Group (Age $A$)
+
+The plus group accumulates all individuals at and above age $A$:
+
+$$N_{A,t} = N_{A-1,t-1} \cdot S_{A-1,t-1} + N_{A,t-1} \cdot S_{A,t-1}$$
+
+This captures both:
+
+1. Survivors aging into the plus group
+2. Survivors remaining in the plus group
+
+### 4. Spawning Stock Biomass
+
+SSB is calculated as:
+
+$$\text{SSB}_t = \sum_{a=1}^{A} N_{a,t} \cdot w_a \cdot m_a$$
+
+where:
+
+- $w_a$ = weight at age $a$
+- $m_a$ = proportion mature at age $a$
+
+## Complete Process Model
+
+$$\boxed{
+\begin{aligned}
+N_{1,t} &= \frac{\alpha \cdot \text{SSB}_{t-1}}{1 + \beta \cdot \text{SSB}_{t-1}} \cdot \exp(\epsilon_{R,t}), \quad \epsilon_{R,t} \sim \mathcal{N}(0, \sigma_R^2) \\[10pt]
+N_{a,t} &= N_{a-1,t-1} \cdot \exp(-Z_{a-1,t-1}), \quad 2 \leq a < A \\[10pt]
+N_{A,t} &= N_{A-1,t-1} \cdot \exp(-Z_{A-1,t-1}) + N_{A,t-1} \cdot \exp(-Z_{A,t-1}) \\[10pt]
+Z_{a,t} &= M + F_t \cdot s_a \\[10pt]
+\text{SSB}_t &= \sum_{a=1}^{A} N_{a,t} \cdot w_a \cdot m_a
+\end{aligned}
+}$$
+
+**Key observation**: $\mathbf{X}_t$ depends only on $\mathbf{X}_{t-1}$ and parameters $\boldsymbol{\theta}$, not on $\mathbf{X}_{t-2}, \mathbf{X}_{t-3}, ...$
+
+Thus: $p(\mathbf{X}_t | \mathbf{X}_{t-1}, \mathbf{X}_{t-2}, ..., \mathbf{X}_0) = p(\mathbf{X}_t | \mathbf{X}_{t-1})$ 
+
+
+# Measurement Model (dmeasure/rmeasure)
+
+## Observations
+
+The model has two types of observations:
+
+$$\mathbf{Y}_t = \begin{bmatrix} C_t \\ I_t \end{bmatrix}$$
+
+where:
+
+- $C_t$ = aggregate catch (biomass)
+- $I_t$ = survey index (abundance or biomass)
+
+## 1. Catch Observation
+
+### Expected Catch (Baranov Equation)
+
+The predicted catch in year $t$ is:
+
+$$\hat{C}_t = \sum_{a=1}^{A} N_{a,t} \cdot \frac{F_t \cdot s_a}{Z_{a,t}} \cdot \left(1 - e^{-Z_{a,t}}\right) \cdot w_a$$
+
+**Components:**
+
+- $N_{a,t}$ = numbers at age
+- $\frac{F_t \cdot s_a}{Z_{a,t}}$ = proportion of mortality due to fishing
+- $1 - e^{-Z_{a,t}}$ = proportion dying during the year
+- $w_a$ = weight at age (converts numbers to biomass)
+
+### Observation Model
+
+$$C_t = \hat{C}_t \cdot \exp(\eta_{C,t}), \quad \eta_{C,t} \sim \mathcal{N}(0, \sigma_C^2)$$
+
+Equivalently (log-normal):
+
+$$\log(C_t) \sim \mathcal{N}(\log(\hat{C}_t), \sigma_C^2)$$
+
+where $\sigma_C = 0.1$ (10% CV).
+
+## 2. Survey Index Observation
+
+### Expected Index
+
+The predicted survey index is:
+
+$$\hat{I}_t = q \sum_{a=1}^{A} s_a \cdot N_{a,t}$$
+
+where:
+
+- $q$ = catchability coefficient
+- $s_a$ = survey selectivity (assumed same as fishery)
+- $N_{a,t}$ = numbers at age
+
+### Observation Model
+
+$$I_t = \hat{I}_t \cdot \exp(\eta_{I,t}), \quad \eta_{I,t} \sim \mathcal{N}(0, \sigma_I^2)$$
+
+Equivalently:
+
+$$\log(I_t) \sim \mathcal{N}(\log(\hat{I}_t), \sigma_I^2)$$
+
+where $\sigma_I = 0.15$ (15% CV).
+
+## Complete Measurement Model
+
+$$\boxed{
+\begin{aligned}
+\hat{C}_t &= \sum_{a=1}^{A} N_{a,t} \cdot \frac{F_t \cdot s_a}{M + F_t \cdot s_a} \cdot \left(1 - \exp\left[-(M + F_t \cdot s_a)\right]\right) \cdot w_a \\[10pt]
+\hat{I}_t &= q \sum_{a=1}^{A} s_a \cdot N_{a,t} \\[10pt]
+\log(C_t) &\sim \mathcal{N}(\log(\hat{C}_t), \sigma_C^2) \\[10pt]
+\log(I_t) &\sim \mathcal{N}(\log(\hat{I}_t), \sigma_I^2)
+\end{aligned}
+}$$
+
+**Key observation**: Observations depend only on current state $\mathbf{X}_t$, not on past states.
+
+Thus: $p(\mathbf{Y}_t | \mathbf{X}_t, \mathbf{X}_{t-1}, ...) = p(\mathbf{Y}_t | \mathbf{X}_t)$ 
+
+
+
+# Initial Conditions (rinit)
+
+## Equilibrium Age Structure
+
+The initial population (year 1) is based on equilibrium assumptions:
+
+### Age 1
+
+$$N_{1,1} = N_0$$
+
+where $N_0 = \exp(\log N_{1,1})$ is a parameter.
+
+### Ages 2 to $A-1$
+
+Assuming equilibrium with initial fishing mortality $F_0 = 0.1$:
+
+$$N_{a,1} = N_{a-1,1} \cdot \exp(-Z_{a-1}^{(0)})$$
+
+where:
+
+$$Z_a^{(0)} = M + F_0 \cdot s_a$$
+
+### Plus Group (Age $A$)
+
+$$N_{A,1} = \frac{N_{A-1,1} \cdot \exp(-Z_{A-1}^{(0)})}{1 - \exp(-Z_A^{(0)})}$$
+
+This represents the equilibrium plus group size.
+
+### Initial SSB
+
+$$\text{SSB}_1 = \sum_{a=1}^{A} N_{a,1} \cdot w_a \cdot m_a$$
+
+## Complete Initial Conditions
+
+$$\boxed{
+\begin{aligned}
+N_{1,1} &= \exp(\log N_{1,1}) \\[10pt]
+N_{a,1} &= N_{1,1} \cdot \prod_{j=1}^{a-1} \exp\left(-(M + F_0 \cdot s_j)\right), \quad 2 \leq a < A \\[10pt]
+N_{A,1} &= \frac{N_{A-1,1} \cdot \exp(-(M + F_0 \cdot s_{A-1}))}{1 - \exp(-(M + F_0 \cdot s_A))} \\[10pt]
+\text{SSB}_1 &= \sum_{a=1}^{A} N_{a,1} \cdot w_a \cdot m_a
+\end{aligned}
+}$$
+
+
+# Likelihood Function
+
+## Joint Likelihood
+
+The negative log-likelihood is:
+
+$$-\ell(\boldsymbol{\theta}) = -\sum_{t=1}^{T} \left[\log p(C_t | \mathbf{X}_t, \boldsymbol{\theta}) + \log p(I_t | \mathbf{X}_t, \boldsymbol{\theta})\right]$$
+
+## Log-Normal Likelihood Components
+
+### Catch Likelihood
+
+$$\log p(C_t | \mathbf{X}_t, \boldsymbol{\theta}) = -\frac{1}{2}\log(2\pi\sigma_C^2) - \frac{[\log(C_t) - \log(\hat{C}_t)]^2}{2\sigma_C^2}$$
+
+### Index Likelihood
+
+$$\log p(I_t | \mathbf{X}_t, \boldsymbol{\theta}) = -\frac{1}{2}\log(2\pi\sigma_I^2) - \frac{[\log(I_t) - \log(\hat{I}_t)]^2}{2\sigma_I^2}$$
+
+## Complete Likelihood
+
+$$\boxed{
+-\ell(\boldsymbol{\theta}) = -\sum_{t=1}^{T} \left\{
+-\frac{[\log(C_t) - \log(\hat{C}_t)]^2}{2\sigma_C^2} - \frac{[\log(I_t) - \log(\hat{I}_t)]^2}{2\sigma_I^2}
+\right\} + \text{constants}
+}$$
+
+
+# Selectivity Function
+
+## Logistic Selectivity
+
+Selectivity at age follows a logistic function:
+
+$$s_a = \frac{1}{1 + \exp(-\gamma(a - a_{50}))}$$
+
+where:
+
+- $a_{50}$ = age at 50% selectivity
+- $\gamma$ = slope parameter (steepness)
+
+## Properties
+
+- $s_a \in [0, 1]$ for all ages
+- $s_{a_{50}} = 0.5$ (50% selected at $a_{50}$)
+- Higher $\gamma$ → steeper selection curve
+
+
+
+
+# Complete Mathematical Formulation
+
+## State-Space Representation
+
+$$\boxed{
+\begin{aligned}
+\textbf{Process Model:} \quad & \\
+N_{1,t} &= \frac{\alpha \cdot \text{SSB}_{t-1}}{1 + \beta \cdot \text{SSB}_{t-1}} \cdot \exp(\epsilon_{R,t}), \quad \epsilon_{R,t} \sim \mathcal{N}(0, \sigma_R^2) \\[8pt]
+N_{a,t} &= N_{a-1,t-1} \cdot \exp(-(M + F_t \cdot s_a)), \quad 2 \leq a < A \\[8pt]
+N_{A,t} &= N_{A-1,t-1} \cdot \exp(-(M + F_t \cdot s_{A-1})) + N_{A,t-1} \cdot \exp(-(M + F_t \cdot s_A)) \\[8pt]
+\text{SSB}_t &= \sum_{a=1}^{A} N_{a,t} \cdot w_a \cdot m_a \\[12pt]
+\textbf{Measurement Model:} \quad & \\
+\hat{C}_t &= \sum_{a=1}^{A} N_{a,t} \cdot \frac{F_t \cdot s_a}{M + F_t \cdot s_a} \cdot (1 - e^{-(M + F_t \cdot s_a)}) \cdot w_a \\[8pt]
+\hat{I}_t &= q \sum_{a=1}^{A} s_a \cdot N_{a,t} \\[8pt]
+\log(C_t) &\sim \mathcal{N}(\log(\hat{C}_t), \sigma_C^2) \\[8pt]
+\log(I_t) &\sim \mathcal{N}(\log(\hat{I}_t), \sigma_I^2)
+\end{aligned}
+}$$
+
+**Key observation**: $\mathbf{X}_t$ depends only on $\mathbf{X}_{t-1}$ and parameters $\boldsymbol{\theta}$, not on $\mathbf{X}_{t-2}, \mathbf{X}_{t-3}, ...$
+
+Thus: $p(\mathbf{X}_t | \mathbf{X}_{t-1}, \mathbf{X}_{t-2}, ..., \mathbf{X}_0) = p(\mathbf{X}_t | \mathbf{X}_{t-1})$   
+
+**Key observation**: Observations depend only on current state $\mathbf{X}_t$, not on past states.
+
+Thus: $p(\mathbf{Y}_t | \mathbf{X}_t, \mathbf{X}_{t-1}, ...) = p(\mathbf{Y}_t | \mathbf{X}_t)$   
+
+WHAM includes:
+
+- **Process noise**: $\epsilon_t \sim \mathcal{N}(0, \sigma_R^2)$ in recruitment
+- **Observation noise**: $\eta_{C,t}, \eta_{I,t} \sim \mathcal{N}(0, \sigma^2)$
+
+Thus the model is stochastic.    
+
+# Comparison: WHAM vs POMP
+
+## Similarities
+
+| Feature | WHAM | POMP |
+|---------|------|------|
+| Population dynamics | Exponential survival | Exponential survival |
+| Recruitment | Beverton-Holt | Beverton-Holt |
+| Catch equation | Baranov | Baranov |
+| Observation errors | Log-normal | Log-normal |
+| Age structure | Yes | Yes |
+
+## Differences
+
+| Feature | WHAM | POMP |
+|---------|------|------|
+| Estimation | TMB (Laplace approx) | Particle filter |
+| Time steps | Flexible (sub-annual) | Discrete (annual) |
+| Random effects | Extensive | Process noise only |
+| Environmental covariates | Built-in | Manual implementation |
+| Computational speed | Very fast | Moderate |
+
+
+
+# Appendix: Parameter Table
+
+## Default Parameter Values
+
+| Parameter | Symbol | Default Value | Units |
+|-----------|--------|---------------|-------|
+| BH capacity | $\alpha$ | $10^6$ | recruits |
+| BH density dep. | $\beta$ | $10^5$ | 1/kg |
+| Recruit SD | $\sigma_R$ | 0.4 | - |
+| Fishing mortality | $F$ | 0.2 | year$^{-1}$ |
+| Catchability | $q$ | 0.3 | - |
+| Initial abundance | $N_{1,1}$ | $10^6$ | fish |
+| Natural mortality | $M$ | 0.2 | year$^{-1}$ |
+| Catch CV | $\sigma_C$ | 0.1 | - |
+| Index CV | $\sigma_I$ | 0.15 | - |
+
+
+
+# Appendix: Notation Summary
+
+## Indices
+
+- $t$ : time (year), $t = 1, ..., T$
+- $a$ : age, $a = 1, ..., A$
+
+## State Variables
+
+- $N_{a,t}$ : numbers at age $a$ in year $t$
+- $\text{SSB}_t$ : spawning stock biomass in year $t$
+
+## Parameters
+
+- $\alpha$ : Beverton-Holt recruitment capacity
+- $\beta$ : Beverton-Holt density dependence
+- $\sigma_R$ : recruitment standard deviation
+- $F_t$ : fishing mortality in year $t$
+- $q$ : catchability coefficient
+- $M$ : natural mortality rate
+
+## Biological Data
+
+- $m_a$ : maturity at age $a$
+- $w_a$ : weight at age $a$
+- $s_a$ : selectivity at age $a$
+
+## Observations
+
+- $C_t$ : catch in year $t$
+- $I_t$ : survey index in year $t$
+
+## Derived Quantities
+
+- $Z_{a,t}$ : total mortality at age $a$ in year $t$
+- $S_{a,t}$ : survival at age $a$ in year $t$
+- $\hat{C}_t$ : predicted catch in year $t$
+- $\hat{I}_t$ : predicted index in year $t$
+
+
