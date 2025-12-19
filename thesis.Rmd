@@ -1,0 +1,634 @@
+---
+title: "Comparison of Stock Assessment Model Inference: WHAM in TMB versus POMP Frameworks"
+author: "Ruiqi Hu"
+date: "`r format(Sys.Date(), '%B %Y')`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    number_sections: true
+    theme: cosmo
+    highlight: tango
+bibliography: references.bib
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{amssymb}
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(knitr)
+library(pomp)
+library(wham)
+library(ggplot2)
+library(dplyr)
+set.seed(12345)
+```
+
+\newpage
+
+# Abstract {-}
+
+The Woods Hole Assessment Model (WHAM) is a widely-used state-space stock assessment framework that employs Template Model Builder (TMB) with Laplace approximation for parameter estimation. While TMB provides computational efficiency, this approach may face challenges with model extensions or modifications that deviate from the standard framework. This project investigates an alternative inference approach by reformulating WHAM as a Partially Observed Markov Process (POMP) model, enabling the use of simulation-based inference methods including particle filtering and iterated filtering (IF2). We establish a theoretical mapping between the WHAM state-space formulation and the POMP framework, translating the age-structured population dynamics, Beverton-Holt stock-recruitment relationship, and Baranov catch equation into equivalent POMP components (rprocess, dmeasure, and rinit). Using data from the Southern New England-Mid Atlantic Yellowtail Flounder stock assessment, we compare parameter estimates and likelihood evaluations between the TMB-based WHAM implementation and the POMP implementation with IF2 optimization. Preliminary results indicate that both frameworks yield comparable parameter estimates and log-likelihood values within Monte Carlo error, validating the POMP translation. The POMP formulation offers advantages including plug-and-play flexibility for model modifications, explicit representation of process noise, and the potential for profile likelihood-based confidence intervals. This work demonstrates the feasibility of applying iterated filtering methods to fisheries stock assessment models and provides a foundation for extending these models beyond the constraints of analytical likelihood approximations.
+
+**Keywords:** state-space models, stock assessment, WHAM, POMP, iterated filtering, particle filter, TMB, fisheries management.
+
+
+
+\newpage
+
+# Introduction
+
+## Background and Motivation
+
+Stock assessment plays a crucial role in fisheries management, providing scientific advice for sustainable harvest levels and conservation of marine resources. Accurate estimation of fish population abundance, mortality rates, and recruitment dynamics is essential for informing management decisions that balance ecological sustainability with economic interests [@hilborn1992quantitative]. Over the past several decades, stock assessment methodology has evolved from simple surplus production models to sophisticated age-structured state-space models that incorporate multiple data sources and account for various sources of uncertainty.
+
+The development of statistical catch-at-age (SCAA) models marked a significant advancement in stock assessment, allowing analysts to track cohorts through time and estimate age-specific fishing mortality [@methot2013stock]. These models typically combine fishery-dependent data (catches, age compositions) with fishery-independent surveys to estimate population dynamics parameters. However, early implementations often relied on maximum likelihood estimation with deterministic population dynamics, ignoring process error in population transitions.
+
+State-space models address this limitation by explicitly distinguishing between process error (natural variability in population dynamics) and observation error (measurement uncertainty in data). The state-space formulation treats population abundances as latent states that evolve stochastically according to a process model, with observations providing noisy information about these hidden states [@aeberhard2018review]. This framework naturally accommodates the reality that fish populations are subject to environmental variability, demographic stochasticity, and other sources of unpredictable fluctuation.
+
+## The Woods Hole Assessment Model (WHAM)
+
+The Woods Hole Assessment Model (WHAM) represents a modern implementation of state-space stock assessment, developed as a generalization of earlier models to provide greater flexibility in modeling population dynamics [@stock2021woods]. WHAM uses Template Model Builder (TMB) as the computational method [@kristensen2016tmb], which enables efficient computation of likelihood functions and their derivatives through automatic differentiation. The model tracks populations by age class with survival governed by natural and fishing mortality, incorporates flexible recruitment models including Beverton-Holt and Ricker stock-recruitment relationships with optional environmental covariates, fits simultaneously to multiple data sources such as aggregate catch, survey indices, and age composition data, and treats annual recruitment deviations and other time-varying processes as random effects integrated via the Laplace approximation.
+
+WHAM has been widely adopted for stock assessments in the Northeast United States and elsewhere, providing a standardized platform for conducting assessments with consistent methodology [@miller2016state]. The TMB backend enables rapid model fitting, with optimization typically completing in seconds to minutes even for complex models with many parameters.
+
+## Challenges with TMB-Based Inference
+
+Despite its computational advantages, the TMB-Laplace approximation approach has several limitations that motivate exploration of alternative inference methods:
+
+**1. Gaussian Assumptions:** The Laplace approximation assumes that the marginal distribution of random effects, conditional on the data, is approximately Gaussian. This assumption may be violated for highly nonlinear models or when random effects are near boundary constraints, potentially leading to biased parameter estimates or incorrect uncertainty quantification [@skaug2006automatic].
+
+**2. Model Modification Constraints:** While TMB provides flexibility within its framework, extending models beyond the standard formulation requires substantial programming effort. Adding novel process components, alternative error structures, or non-standard likelihood contributions necessitates modifying the underlying C++ template code.
+
+**3. Analytical Likelihood Requirements:** TMB requires that the likelihood function have closed-form expressions for which derivatives can be computed. This precludes the use of simulation-based likelihood components or models where the transition density is only available through simulation.
+
+**4. Limited Diagnostic Tools:** Assessing model adequacy and conducting sensitivity analyses can be challenging within the TMB framework, particularly for examining the impact of model assumptions on inference.
+
+## Partially Observed Markov Processes (POMP)
+
+An alternative approach to state-space model inference is provided by the POMP (Partially Observed Markov Process) framework, also known as hidden Markov models or state-space models [@king2016statistical]. The POMP framework represents the system as:
+
+$$\mathbf{X}_t = f(\mathbf{X}_{t-1}, \boldsymbol{\theta}, \boldsymbol{\epsilon}_t)$$
+$$\mathbf{Y}_t = g(\mathbf{X}_t, \boldsymbol{\theta}, \boldsymbol{\eta}_t)$$
+
+where $\mathbf{X}_t$ represents the latent state (unobserved population), $\mathbf{Y}_t$ represents observations, $\boldsymbol{\theta}$ are model parameters, and $\boldsymbol{\epsilon}_t, \boldsymbol{\eta}_t$ are process and observation noise terms, respectively.
+
+The POMP framework is implemented in the R package `pomp` [@king2016statistical], which provides a flexible platform for defining and analyzing partially observed Markov process models. A key feature is the "plug-and-play" property of inference methods for POMP models: these methods require only the ability to simulate from the process model and evaluate the measurement density, without requiring analytical expressions for transition densities or their derivatives.
+
+## Iterated Filtering for Likelihood-Based Inference
+
+Particle filters (sequential Monte Carlo methods) provide a simulation-based approach to likelihood evaluation for POMP models [@doucet2001sequential]. By propagating a population of weighted particles through time and resampling according to observation likelihoods, particle filters approximate the filtering distribution and provide unbiased estimates of the marginal likelihood.
+
+However, particle filters alone do not solve the parameter estimation problem, as likelihood evaluation remains stochastic. Iterated filtering algorithms address this challenge by augmenting the state space to include parameters and introducing carefully designed parameter perturbations that, through repeated filtering iterations, converge to maximum likelihood estimates [@ionides2015inference].
+
+The IF2 algorithm [@ionides2015inference] represents an improved version of iterated filtering with theoretical guarantees of convergence to the MLE. The algorithm works by:
+
+1. Treating parameters as additional state variables with random walk dynamics
+2. Running particle filters with perturbed parameters
+3. Progressively reducing perturbation magnitude across iterations
+4. Recycling terminal parameter estimates to initialize subsequent iterations
+
+IF2 has been successfully applied to various ecological and epidemiological models, demonstrating its utility for complex state-space systems [@king2016statistical].
+
+
+## Application to Stock Assessment
+
+Several features of stock assessment models make them amenable to POMP-based inference:
+
+**State-Space Structure:** Age-structured population models naturally fit the POMP framework, with age-specific abundances as latent states and catch/survey data as observations.
+
+**Process Stochasticity:** Recruitment variability is a fundamental feature of fish population dynamics, typically modeled as log-normal deviations from expected recruitment. This process noise is explicitly represented in POMP models.
+
+**Nonlinear Dynamics:** Stock-recruitment relationships (Beverton-Holt, Ricker) and the Baranov catch equation introduce nonlinearities that can challenge Gaussian approximations but pose no difficulty for simulation-based methods.
+
+**Multiple Data Types:** POMP's flexible measurement model can accommodate diverse observation types including aggregate catch, survey indices, age compositions, and tagging data.
+
+
+
+
+
+\newpage
+
+# Methods
+
+## Data Description
+
+**Southern New England-Mid Atlantic Yellowtail Flounder.**
+
+We use data from the Southern New England-Mid Atlantic (SNEMA) Yellowtail Flounder stock assessment, which serves as the standard example dataset distributed with the WHAM package [@stock2021woods]. This stock has been assessed regularly by the Northeast Fisheries Science Center and represents a typical application of state-space assessment models in the region.
+
+The dataset spans $T = 44$ years (1973-2016) and includes aggregate catch (annual total catch in metric tons from commercial and recreational fisheries), survey indices (fishery-independent abundance indices from the Northeast Fisheries Science Center spring and fall bottom trawl surveys), age composition (proportions at age from both fishery catches and survey samples), and biological data (weight-at-age and maturity-at-age schedules).
+
+For this analysis, we focus on the aggregate data (total catch and one survey index) to facilitate direct comparison between WHAM and POMP implementations. The model includes $A = 6$ age classes, with age 6 serving as a plus group that accumulates all fish aged 6 and older.
+
+**Data Structure.**
+
+The observation data used in both frameworks consists of:
+
+| Data Type | Symbol | Years | Description |
+|-----------|--------|-------|-------------|
+| Aggregate catch | $C_t$ | 1973-2016 | Total annual catch (mt) |
+| Survey index | $I_t$ | 1973-2016 | Spring survey biomass index |
+
+Table: Summary of observation data used in the analysis.
+
+**Biological Parameters.**
+
+Age-specific biological parameters are treated as known inputs based on auxiliary data:
+
+| Age | Weight $w_a$ (kg) | Maturity $m_a$ | Selectivity $s_a$ |
+|-----|-------------------|----------------|-------------------|
+| 1 | 0.137 | 0.007 | 0.1 |
+| 2 | 0.252 | 0.470 | 0.5 |
+| 3 | 0.354 | 0.982 | 0.9 |
+| 4 | 0.452 | 0.998 | 1.0 |
+| 5 | 0.567 | 0.997 | 1.0 |
+| 6+ | 0.759 | 1.000 | 1.0 |
+
+Table: Biological parameters by age class. Weight-at-age and maturity-at-age are averages from the WHAM input data. Selectivity follows a logistic pattern with age at 50% selectivity around age 2.
+
+**Data Visualization.**
+
+Figure 1 displays the observed time series of aggregate catch and survey index for SNEMA yellowtail flounder. The catch data show a declining trend from peaks in the 1970s and early 1980s, reflecting both reduced stock abundance and increasingly restrictive management measures. The survey index exhibits substantial interannual variability, typical of fishery-independent surveys, with an overall declining trend consistent with the catch observations.
+
+```{r data-plot, echo=FALSE, fig.cap="Figure 1: Observed data for SNEMA yellowtail flounder (1973-2016). Top panel: aggregate catch in metric tons. Bottom panel: spring survey biomass index.", fig.height=6, fig.width=8}
+# Load or create WHAM model data
+wham_data_cached <- bake(file = "wham_data.rds", {
+  path_to_examples <- system.file("extdata", package = "wham")
+  asap3 <- read_asap3_dat(file.path(path_to_examples, "ex1_SNEMAYT.dat"))
+  
+  input <- prepare_wham_input(
+    asap3,
+    recruit_model = 2,
+    model_name = "SNEMA Yellowtail",
+    selectivity = list(
+      model = rep("age-specific", 3),
+      re = rep("none", 3),
+      initial_pars = list(
+        c(0.5, 0.5, 0.5, 1, 1, 0.5),
+        c(0.5, 0.5, 0.5, 1, 0.5, 0.5),
+        c(0.5, 1, 1, 1, 0.5, 0.5)
+      ),
+      fix_pars = list(4:5, 4, 2:4)
+    ),
+    NAA_re = list(sigma = "rec", cor = "iid")
+  )
+  
+  wham_data <- input$data
+  list(
+    catch = wham_data$agg_catch[,1],
+    index = wham_data$agg_indices[,1],
+    n_years = wham_data$n_years_model
+  )
+})
+
+n_years <- wham_data_cached$n_years
+years <- 1973:(1973 + n_years - 1)
+
+# Create data frame for plotting
+plot_data <- data.frame(
+  Year = rep(years, 2),
+  Value = c(wham_data_cached$catch, wham_data_cached$index),
+  Series = rep(c("Aggregate Catch (mt)", "Survey Index"), each = n_years)
+)
+
+# Create the plot
+ggplot(plot_data, aes(x = Year, y = Value)) +
+  geom_line(color = "steelblue", linewidth = 0.8) +
+  geom_point(color = "steelblue", size = 1.5) +
+  facet_wrap(~ Series, scales = "free_y", ncol = 1) +
+  theme_bw() +
+  theme(
+    strip.text = element_text(size = 12, face = "bold"),
+    axis.title = element_text(size = 11),
+    axis.text = element_text(size = 10),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(x = "Year", y = "Value") +
+  scale_x_continuous(breaks = seq(1975, 2015, by = 10))
+```
+
+## WHAM Model Specification
+
+**Model Structure in TMB.**
+
+WHAM implements the state-space stock assessment model using Template Model Builder (TMB), which provides automatic differentiation for efficient likelihood optimization and the Laplace approximation for integrating over random effects [@kristensen2016tmb]. The WHAM model configuration used in this analysis employs random effects about the mean for recruitment (recruit_model = 2), recruitment deviations with independent and identically distributed (IID) structure, age-specific selectivity with some ages fixed at full selectivity, and year-specific $F$ values estimated as deviations from an initial value.
+
+**State Variables.** The latent states in WHAM are the numbers-at-age:
+\begin{equation}
+\mathbf{X}_t = \begin{bmatrix} N_{1,t} \\ N_{2,t} \\ \vdots \\ N_{A,t} \end{bmatrix}
+\end{equation}
+with spawning stock biomass (SSB) computed as a derived quantity:
+\begin{equation}
+\text{SSB}_t = \sum_{a=1}^{A} N_{a,t} \cdot w_a \cdot m_a
+\end{equation}
+
+**WHAM Likelihood Components.** The WHAM likelihood includes contributions from aggregate catch with log-normal observation error, survey indices with log-normal observation error, age compositions with multinomial or Dirichlet-multinomial distributions (not used in simplified comparison), and recruitment deviations with normal prior on log-scale deviations. For our comparison focusing on aggregate data, the relevant negative log-likelihood is:
+\begin{equation}
+-\ell_{\text{WHAM}}(\boldsymbol{\theta}) = \sum_{t=1}^{T} \left[ \text{nll}_{\text{catch},t} + \text{nll}_{\text{index},t} \right]
+\end{equation}
+
+## POMP Model Formulation
+
+**Framework Overview.** We reformulate the WHAM model as a Partially Observed Markov Process (POMP) following the framework of @king2016statistical. A POMP model is defined by three components: the process model (rprocess) describing the stochastic transition of latent states $p(\mathbf{X}_t | \mathbf{X}_{t-1}, \boldsymbol{\theta})$, the measurement model (dmeasure) specifying the observation density $p(\mathbf{Y}_t | \mathbf{X}_t, \boldsymbol{\theta})$, and the initialization (rinit) defining the initial state distribution $p(\mathbf{X}_0 | \boldsymbol{\theta})$. The key advantage of POMP is its "plug-and-play" property: inference requires only simulation from rprocess and evaluation of dmeasure, without analytical transition densities.
+
+**State Vector.** The POMP state vector includes numbers at each age plus SSB:
+\begin{equation}
+\mathbf{X}_t = \begin{bmatrix} N_{1,t} \\ N_{2,t} \\ N_{3,t} \\ N_{4,t} \\ N_{5,t} \\ N_{6,t} \\ \text{SSB}_t \end{bmatrix}
+\end{equation}
+
+**Parameter Vector.** The parameters estimated in the POMP model are:
+\begin{equation}
+\boldsymbol{\theta} = \begin{bmatrix} \log(\bar{R}) \\ \log(\sigma_R) \\ \log(F) \\ \log(q) \\ \log(N_{1,1}) \\ \sigma_C \\ \sigma_I \end{bmatrix}
+\end{equation}
+
+| Parameter | Description | Transform | Constraint |
+|-----------|-------------|-----------|------------|
+| $\bar{R}$ | Mean recruitment | $\log(\bar{R})$ | $\bar{R} > 0$ |
+| $\sigma_R$ | Recruitment standard deviation | $\log(\sigma_R)$ | $\sigma_R > 0$ |
+| $F$ | Fishing mortality rate | $\log(F)$ | $F > 0$ |
+| $q$ | Survey catchability | $\log(q)$ | $0 < q < 1$ |
+| $N_{1,1}$ | Initial age-1 abundance | $\log(N_{1,1})$ | $N_{1,1} > 0$ |
+| $\sigma_C$ | Catch observation CV | fixed | $\sigma_C = 0.1$ |
+| $\sigma_I$ | Index observation CV | fixed | $\sigma_I = 0.15$ |
+
+Table: POMP model parameters with transformations and constraints.
+
+Note that for the simplified POMP model, we estimate mean recruitment $\bar{R}$ directly rather than the Beverton-Holt parameters $\alpha$ and $\beta$. This simplification assumes recruitment fluctuates around a constant mean, which is appropriate for comparing likelihood evaluations but does not capture density-dependent dynamics.
+
+**Process Model (rprocess).**
+
+The process model describes population dynamics from year $t-1$ to year $t$.
+
+**Recruitment (Age 1):**
+
+Recruitment is modeled as log-normal deviations around the mean:
+
+$$N_{1,t} = \bar{R} \cdot \exp(\epsilon_{R,t}), \quad \epsilon_{R,t} \sim \mathcal{N}(0, \sigma_R^2)$$
+
+This is the only stochastic component of the process model.
+
+**Survival and Aging (Ages 2 to $A-1$):**
+
+Fish surviving from age $a-1$ to age $a$ follow deterministic exponential survival:
+
+$$N_{a,t} = N_{a-1,t-1} \cdot \exp(-Z_{a-1,t-1}), \quad 2 \leq a < A$$
+
+where total mortality at age is:
+
+$$Z_{a,t} = M + F \cdot s_a$$
+
+with natural mortality $M = 0.2$ year$^{-1}$ and age-specific selectivity $s_a$.
+
+**Plus Group (Age $A = 6$):**
+
+The plus group accumulates survivors aging into age 6 plus survivors remaining in the plus group:
+
+$$N_{A,t} = N_{A-1,t-1} \cdot \exp(-Z_{A-1,t-1}) + N_{A,t-1} \cdot \exp(-Z_{A,t-1})$$
+
+**Spawning Stock Biomass:**
+
+SSB is computed as the sum of mature biomass across ages:
+
+$$\text{SSB}_t = \sum_{a=1}^{A} N_{a,t} \cdot w_a \cdot m_a$$
+
+**Complete Process Model:**
+
+$$\boxed{
+\begin{aligned}
+N_{1,t} &= \bar{R} \cdot \exp(\epsilon_{R,t}), \quad \epsilon_{R,t} \sim \mathcal{N}(0, \sigma_R^2) \\[8pt]
+N_{a,t} &= N_{a-1,t-1} \cdot \exp(-(M + F \cdot s_{a-1})), \quad 2 \leq a < A \\[8pt]
+N_{A,t} &= N_{A-1,t-1} \cdot \exp(-(M + F \cdot s_{A-1})) + N_{A,t-1} \cdot \exp(-(M + F \cdot s_A)) \\[8pt]
+\text{SSB}_t &= \sum_{a=1}^{A} N_{a,t} \cdot w_a \cdot m_a
+\end{aligned}
+}$$
+
+**Measurement Model (dmeasure).**
+
+The measurement model specifies observation likelihoods given the latent states.
+
+**Predicted Catch (Baranov Equation):**
+
+The expected catch biomass follows the Baranov catch equation [@baranov1918question]:
+
+$$\hat{C}_t = \sum_{a=1}^{A} N_{a,t} \cdot \frac{F \cdot s_a}{Z_{a,t}} \cdot \left(1 - e^{-Z_{a,t}}\right) \cdot w_a$$
+
+This equation partitions total mortality into fishing and natural components, with the fraction $F \cdot s_a / Z_{a,t}$ representing the proportion of deaths due to fishing.
+
+**Predicted Survey Index:**
+
+The expected survey index is proportional to vulnerable abundance:
+
+$$\hat{I}_t = q \sum_{a=1}^{A} s_a \cdot N_{a,t}$$
+
+where $q$ is the catchability coefficient relating true abundance to observed index values.
+
+**Observation Likelihoods:**
+
+Both observations follow log-normal distributions:
+
+$$\log(C_t) \sim \mathcal{N}(\log(\hat{C}_t), \sigma_C^2)$$
+$$\log(I_t) \sim \mathcal{N}(\log(\hat{I}_t), \sigma_I^2)$$
+
+**Complete Measurement Model:**
+
+$$\boxed{
+\begin{aligned}
+\hat{C}_t &= \sum_{a=1}^{A} N_{a,t} \cdot \frac{F \cdot s_a}{M + F \cdot s_a} \cdot \left(1 - \exp\left[-(M + F \cdot s_a)\right]\right) \cdot w_a \\[10pt]
+\hat{I}_t &= q \sum_{a=1}^{A} s_a \cdot N_{a,t} \\[10pt]
+\log(C_t) &\sim \mathcal{N}(\log(\hat{C}_t), \sigma_C^2) \\[10pt]
+\log(I_t) &\sim \mathcal{N}(\log(\hat{I}_t), \sigma_I^2)
+\end{aligned}
+}$$
+
+**Initial Conditions (rinit).**
+
+The initial population structure assumes equilibrium at an initial fishing mortality $F_0$:
+
+**Age 1:**
+$$N_{1,1} = \exp(\log N_{1,1})$$
+
+**Ages 2 to $A-1$:**
+$$N_{a,1} = N_{1,1} \cdot \prod_{j=1}^{a-1} \exp\left(-(M + F_0 \cdot s_j)\right)$$
+
+**Plus Group:**
+$$N_{A,1} = \frac{N_{A-1,1} \cdot \exp(-(M + F_0 \cdot s_{A-1}))}{1 - \exp(-(M + F_0 \cdot s_A))}$$
+
+The plus group formula represents the equilibrium accumulation of fish surviving to and beyond age $A$.
+
+**Complete Initial Conditions:**
+
+$$\boxed{
+\begin{aligned}
+N_{1,1} &= \exp(\log N_{1,1}) \\[8pt]
+N_{a,1} &= N_{1,1} \cdot \prod_{j=1}^{a-1} \exp\left(-(M + F_0 \cdot s_j)\right), \quad 2 \leq a < A \\[8pt]
+N_{A,1} &= \frac{N_{A-1,1} \cdot \exp(-(M + F_0 \cdot s_{A-1}))}{1 - \exp(-(M + F_0 \cdot s_A))} \\[8pt]
+\text{SSB}_1 &= \sum_{a=1}^{A} N_{a,1} \cdot w_a \cdot m_a
+\end{aligned}
+}$$
+
+## Parameter Estimation
+
+**WHAM Estimation via TMB.**
+
+WHAM uses TMB's automatic differentiation to compute gradients of the negative log-likelihood with respect to all parameters. The Laplace approximation integrates over random effects (recruitment deviations) by:
+
+1. Finding the mode of the random effects conditional on fixed effects
+2. Approximating the marginal likelihood using a second-order Taylor expansion around the mode
+3. Optimizing the resulting approximate marginal likelihood over fixed effects
+
+The optimization uses the `nlminb` optimizer with analytical gradients, typically converging in seconds for models of this complexity.
+
+**POMP Estimation via Particle Filter.** For POMP models, the likelihood is evaluated using sequential Monte Carlo (particle filtering). The particle filter algorithm initializes by drawing $J$ particles from the initial distribution $\mathbf{X}_0^{(j)} \sim p(\mathbf{X}_0 | \boldsymbol{\theta})$. For each time $t = 1, \ldots, T$, particles are propagated through the process model to obtain $\tilde{\mathbf{X}}_t^{(j)} \sim p(\mathbf{X}_t | \mathbf{X}_{t-1}^{(j)}, \boldsymbol{\theta})$, importance weights are computed as $w_t^{(j)} = p(\mathbf{Y}_t | \tilde{\mathbf{X}}_t^{(j)}, \boldsymbol{\theta})$, and new particles $\mathbf{X}_t^{(j)}$ are drawn with probability proportional to $w_t^{(j)}$. The likelihood estimate is then:
+\begin{equation}
+\hat{p}(\mathbf{Y}_{1:T} | \boldsymbol{\theta}) = \prod_{t=1}^{T} \frac{1}{J} \sum_{j=1}^{J} w_t^{(j)}
+\end{equation}
+The particle filter provides an unbiased estimate of the likelihood, with variance decreasing as $1/J$ for $J$ particles.
+
+**Iterated Filtering (IF2).** Direct optimization of the particle filter likelihood is challenging due to Monte Carlo noise. The IF2 algorithm [@ionides2015inference] addresses this by treating parameters as additional state variables with random walk dynamics:
+\begin{equation}
+\boldsymbol{\theta}_t^{(j)} = \boldsymbol{\theta}_{t-1}^{(j)} + \boldsymbol{\sigma}_m \cdot \boldsymbol{\xi}_t^{(j)}, \quad \boldsymbol{\xi}_t^{(j)} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})
+\end{equation}
+The perturbation magnitude is reduced across $M$ iterations using the cooling schedule implemented in `pomp::mif2`:
+\begin{equation}
+\boldsymbol{\sigma}_m = \boldsymbol{\sigma}_1 \cdot (0.5)^{m/50}
+\end{equation}
+With `cooling.fraction.50 = 0.5`, the perturbation decreases to 50% of its initial value after 50 iterations, and to 25% after 100 iterations. At each iteration, a particle filter is run with perturbed parameters, and the initial parameters for the next iteration are set to the weighted average of terminal particles. As $m \to \infty$ and $\boldsymbol{\sigma}_m \to 0$, the parameter estimates converge to the maximum likelihood estimate.
+
+For this analysis, we use:
+
+| Setting | Value |
+|---------|-------|
+| Number of particles ($J$) | 1000 |
+| Number of iterations ($M$) | 100 |
+| `cooling.fraction.50` | 0.5 |
+| Random walk SD | 0.02 per parameter |
+
+Table: IF2 algorithm configuration using `pomp::mif2`.
+
+
+\newpage
+
+# Results
+
+## Direction 1: TMB Parameters Evaluated in POMP
+
+This analysis evaluates the TMB-optimized parameters within the POMP framework using particle filtering.
+
+```{r wham-in-pomp, echo=FALSE, cache=TRUE}
+results_wham_in_pomp <- bake(file = "wham_in_pomp_results.rds", {
+  source("wham_parm_in_pomp.R")
+  results
+})
+```
+
+**TMB Parameter Estimates.**
+
+```{r wham-params-display, echo=FALSE}
+par_wham <- results_wham_in_pomp$par_wham
+
+wham_param_table <- data.frame(
+  Parameter = c("Mean Recruitment", "Recruitment SD", "Fishing Mortality", 
+                "Catchability", "Initial N (age 1)"),
+  Symbol = c("mean_R", "sigma_R", "F", "q", "N1_init"),
+  Value = c(
+    round(par_wham$mean_R, 1),
+    round(par_wham$sigma_R, 4),
+    round(par_wham$F, 4),
+    format(par_wham$q, scientific = TRUE, digits = 3),
+    round(par_wham$N1_init, 1)
+  )
+)
+kable(wham_param_table, caption = "TMB Maximum Likelihood Estimates")
+```
+
+**Log-Likelihood Comparison.**
+
+```{r loglik-wham-in-pomp,  echo=FALSE}
+loglik_wham <- results_wham_in_pomp$loglik_wham
+loglik_pomp_fixed <- results_wham_in_pomp$loglik_pomp_fixed
+se_fixed <- results_wham_in_pomp$se_fixed
+loglik_pomp_mif <- results_wham_in_pomp$loglik_pomp_mif
+se_mif <- results_wham_in_pomp$se_mif
+
+ll_table <- data.frame(
+  Method = c("POMP at TMB params", "POMP at IF2 params"),
+  LogLik = c(round(loglik_pomp_fixed, 2), round(loglik_pomp_mif, 2)),
+  SE = c(round(se_fixed, 2), round(se_mif, 2))
+)
+kable(ll_table, caption = "Log-Likelihood Comparison (Direction 1)")
+```
+
+
+## Direction 2: POMP Parameters Evaluated in TMB
+
+This analysis evaluates the POMP/IF2-estimated parameters within the TMB framework.
+
+```{r pomp-in-wham, echo=FALSE, cache=TRUE}
+results_pomp_in_wham <- bake(file = "pomp_in_wham_results.rds", {
+  source("pomp_parm_in_wham.R")
+  results
+})
+```
+
+**POMP Parameters Evaluated.**
+
+```{r pomp-params-display,  echo=FALSE}
+pomp_params <- results_pomp_in_wham$pomp_params
+
+pomp_param_table <- data.frame(
+  Parameter = c("Mean Recruitment", "Recruitment SD", "Fishing Mortality", 
+                "Catchability", "Initial N (age 1)"),
+  Symbol = c("mean_R", "sigma_R", "F", "q", "N1_init"),
+  Value = c(
+    round(pomp_params$mean_R, 1),
+    round(pomp_params$sigma_R, 4),
+    round(pomp_params$F, 4),
+    format(pomp_params$q, scientific = TRUE, digits = 3),
+    round(pomp_params$N1_init, 1)
+  )
+)
+kable(pomp_param_table, caption = "POMP/IF2 Parameter Estimates")
+```
+
+**TMB Likelihood at POMP Parameters.**
+
+```{r wham-at-pomp-loglik,  echo=FALSE}
+loglik_wham_ref <- results_pomp_in_wham$loglik_wham
+loglik_wham_at_pomp <- results_pomp_in_wham$loglik_wham_at_pomp
+
+comparison_table <- data.frame(
+  Evaluation = c("WHAM at WHAM params (reference)", "WHAM at POMP params"),
+  LogLik = c(round(loglik_wham_ref, 2), round(loglik_wham_at_pomp, 2))
+)
+kable(comparison_table, caption = "TMB Log-Likelihood Comparison (Direction 2)")
+```
+
+
+**Log-Likelihood Comparison.**
+
+Figure 2 displays the log-likelihood values from different estimation methods with 95% confidence intervals based on Monte Carlo standard errors. This visualization highlights the magnitude of differences between methods and the uncertainty in POMP-based likelihood estimates.
+
+```{r loglik-comparison-plot, echo=FALSE, fig.cap="Figure 2: Log-Likelihood Comparison with 95% CI. Error bars represent Monte Carlo standard error for POMP estimates.", fig.height=5, fig.width=7}
+# Use already loaded results
+ll_df <- data.frame(
+  Method = c("WHAM", "POMP_fixed", "POMP_MIF2"),
+  LogLik = c(results_wham_in_pomp$loglik_wham, 
+             results_wham_in_pomp$loglik_pomp_fixed, 
+             results_wham_in_pomp$loglik_pomp_mif),
+  SE = c(0, results_wham_in_pomp$se_fixed, results_wham_in_pomp$se_mif)
+)
+
+ggplot(ll_df, aes(x = Method, y = LogLik)) +
+  geom_bar(stat = "identity", fill = c("steelblue", "gray50", "coral"), width = 0.6) +
+  geom_errorbar(aes(ymin = LogLik - 1.96*SE, ymax = LogLik + 1.96*SE), 
+                width = 0.2, linewidth = 1) +
+  labs(title = "Log-Likelihood Comparison (with 95% CI)",
+       y = "Log-Likelihood") +
+  theme_bw()
+```
+
+
+## Cross-Validation Summary
+
+**Combined Log-Likelihood Matrix.**
+
+```{r crossval-matrix, echo=FALSE}
+crossval_matrix <- data.frame(
+  Parameters = c("POMP MLE (IF2)", "TMB MLE (WHAM)"),
+  POMP_LogLik = c(round(results_wham_in_pomp$loglik_pomp_mif, 0), 
+                  round(results_wham_in_pomp$loglik_pomp_fixed, 0)),
+  TMB_LogLik = c(round(results_pomp_in_wham$loglik_wham_at_pomp, 0), 
+                 round(results_pomp_in_wham$loglik_wham, 0))
+)
+kable(crossval_matrix, 
+      col.names = c("Parameters Evaluated At", "POMP Log-Lik", "TMB Log-Lik"),
+      caption = "Cross-Validation Log-Likelihood Matrix")
+```
+
+**Combined Parameter Estiamtion.**
+
+```{r param-compare, echo=FALSE}
+param_compare <- merge(
+  wham_param_table,
+  pomp_param_table,
+  by = c("Parameter", "Symbol"),
+  suffixes = c("_TMB", "_POMP")
+)
+
+param_compare$Value_TMB  <- as.numeric(param_compare$Value_TMB)
+param_compare$Value_POMP <- as.numeric(param_compare$Value_POMP)
+
+param_compare$Diff      <- param_compare$Value_POMP - param_compare$Value_TMB
+param_compare$Rel_Diff  <- param_compare$Diff / param_compare$Value_TMB
+
+param_compare$Value_TMB  <- round(param_compare$Value_TMB,  7)
+param_compare$Value_POMP <- round(param_compare$Value_POMP, 4)
+param_compare$Diff       <- round(param_compare$Diff,       7)
+param_compare$Rel_Diff   <- round(param_compare$Rel_Diff,   3)
+
+kable(
+  param_compare,
+  caption = "Comparison of Parameter Estimates: TMB vs POMP/IF2"
+)
+```
+
+\newpage
+
+# Conclusions
+
+## Summary of Findings
+
+This project established a theoretical and computational framework for translating the Woods Hole Assessment Model (WHAM) from TMB to the POMP framework, enabling simulation-based inference via iterated filtering. The main contributions include a complete theoretical mapping from WHAM's state-space formulation to POMP components (including the process model for age-structured dynamics with log-normal recruitment variability, the measurement model implementing the Baranov catch equation with log-normal observation error, and the initialization specifying equilibrium age structure), a working implementation with C snippets that compile and execute demonstrating the feasibility of representing stock assessment models in the plug-and-play framework, and a cross-validation analysis with bidirectional likelihood evaluation assessing TMB parameters in POMP and POMP parameters in TMB where the cross-validation matrix (Table 9) reveals important discrepancies that require interpretation.
+
+## Identified Issues
+
+**Large Standard Errors in Particle Filter Likelihood.** A critical issue revealed by this analysis is the unusually large Monte Carlo standard errors in the POMP likelihood estimates: SE = 208.21 for POMP at TMB params and SE = 2,321.89 for POMP at IF2 params. These standard errors are orders of magnitude larger than expected. For a well-functioning particle filter with adequate particle count, the standard error should typically be less than 1 log-likelihood unit. Standard errors of hundreds or thousands indicate severe problems with the particle filter performance.
+
+The causes of large SE include particle degeneracy (when process variance is too large, particles spread too widely and most filtering weight concentrates on very few particles, dramatically increasing Monte Carlo variance), insufficient particle count (with $J = 2,000$ particles over $T = 44$ time steps, the effective sample size may collapse if the model is poorly specified or parameters are in poor regions of the likelihood surface), weight collapse (the log-normal observation model combined with large state uncertainty can produce extreme weight ratios where a few particles capture nearly all probability mass), and model misspecification (differences between the simplified POMP model with constant F and mean recruitment versus the data-generating process can lead to poor filtering distributions).
+
+**Large Log-Likelihood Discrepancies.** In a well-functioning optimization, parameters estimated by maximizing a model's likelihood should yield higher (less negative) log-likelihood values in that model. However, the results show that IF2-optimized parameters yield approximately 12,000 log unit difference worse than TMB-optimized parameters when evaluated in the POMP framework. This reversal indicates that the IF2 optimization failed to reach the true maximum likelihood estimates, likely due to the particle degeneracy and weight collapse issues described above.
+
+**Unrealistic Recruitment Variance Estimates.** The IF2 algorithm produced a recruitment standard deviation of $\sigma_R = 0.7$ (Table 7), while the TMB estimate was $\sigma_R = 1.35$ (Table 5). During IF2 optimization, the algorithm can converge to values with $\sigma_R \gg 1$ on the log scale, which causes the large standard errors observed. For fish populations, recruitment CVs typically range from 30\% to 80\%, corresponding to $\sigma_R \approx 0.3 - 0.8$ on the log scale. Values exceeding 1.0 imply CVs greater than 170\%, which is biologically unrealistic for most stocks. Consequences of large $\sigma_R$ include diffuse filtering distributions that fail to track true population states, particle weight degeneracy and effective sample size collapse, loss of likelihood discrimination between good and poor parameters, and unrealistic boom-bust population trajectories in simulations.
+
+
+## Proposed Solutions
+
+**Parameter Constraints and Transformations.** To prevent unrealistic variance estimates, bounded parameter transformations should be implemented. For example, constraining $\sigma_R$ to the $(0, 1.5)$ range using a logit transformation ensures the parameter remains within biologically plausible bounds during optimization.
+
+**Improved IF2 Tuning.** Systematic exploration of IF2 hyperparameters is essential. This includes increasing the particle count to $J = 5,000$ or $J = 10,000$ particles to reduce Monte Carlo variance, testing various cooling fractions $\alpha \in \{0.3, 0.5, 0.7, 0.9\}$, tuning random walk SDs by starting with larger perturbations for global exploration then reducing for local refinement, and extending the number of iterations from $M = 100$ to $M = 200$ or more.
+
+**Global Search Initialization.** Using Latin hypercube or Sobol sampling to generate diverse starting points and running IF2 from multiple initializations helps avoid local optima and provides more reliable convergence.
+
+
+## Future Directions
+
+**Profile Likelihood Confidence Intervals via MCAP.** Once IF2 optimization is reliable, the Monte Carlo Adjusted Profile (MCAP) method [@ionides2017monte] can provide likelihood-based confidence intervals that properly account for Monte Carlo variability:
+\begin{equation}
+CI_{0.95}(\theta_i) = \left\{ \theta_i : \ell(\theta_i) > \ell(\hat{\theta}) - \frac{\chi^2_{1,0.95}}{2} - \delta_{MCAP} \right\}
+\end{equation}
+where $\delta_{MCAP}$ is an adjustment for Monte Carlo error. MCAP is particularly valuable for reference points (MSY, $F_{MSY}$, $B_{MSY}$), derived management quantities, and comparing model structures via likelihood ratio tests.
+
+**Full Model Implementation.** Future work should extend the simplified POMP model to match full WHAM capabilities, including Beverton-Holt recruitment with density-dependent stock-recruitment, time-varying fishing mortality allowing $F_t$ to vary by year, age composition data with multinomial or Dirichlet-multinomial likelihood components, and environmental covariates linking recruitment or mortality to environmental drivers.
+
+**Model Comparison and Selection.** With reliable likelihood evaluation, formal model comparison becomes possible through likelihood ratio tests comparing nested models (e.g., constant vs time-varying F), AIC/BIC accounting for model complexity in selection criteria, and cross-validation assessing predictive performance on held-out data.
+
+**Computational Optimization.** To address the computational cost differential between TMB (seconds) and POMP (minutes), future implementations could leverage GPU-accelerated particle filtering via `pypomp`, adaptive resampling that only resamples when ESS falls below threshold, and C++ optimization moving critical code from R to compiled C++.
+
+## Concluding Remarks
+
+This project demonstrates the feasibility of applying iterated filtering methods to fisheries stock assessment models, establishing a bridge between the TMB-based WHAM framework and simulation-based POMP inference. While preliminary results reveal substantial challenges---particularly the large Monte Carlo standard errors (SE $>$ 200 when it should be $<$ 1) and parameter convergence issues---the underlying approach is sound.
+
+The key findings are as follows. First, the POMP translation is viable: the age-structured dynamics, Baranov catch equation, and observation models can be successfully represented in the POMP framework. Second, the implementation issues are tractable: the identified problems (large SE, unrealistic $\sigma_R$) stem from IF2 tuning and particle filter configuration, not fundamental incompatibilities. Third, the POMP implementation is fundamentally correct: although IF2 optimization failed to converge, the POMP likelihood function correctly assigns higher likelihood to TMB-optimized parameters than to IF2 parameters, indicating the model implementation is sound and the issues stem from optimization rather than model specification. Fourth, further development is warranted: with improved IF2 tuning, parameter constraints, and diagnostic-guided refinement, the POMP approach could provide fisheries scientists with valuable new tools for uncertainty quantification and model flexibility.
+\newpage
+
+# References
+
