@@ -9,8 +9,54 @@ cat("================================================================\n")
 cat("EVALUATE POMP PARAMETERS IN WHAM MODEL\n")
 cat("================================================================\n\n")
 
-# Load original WHAM model for reference
-load("vign_10_mod_1.RData")
+# Data file path
+data_dir <- "data"
+data_file <- file.path(data_dir, "vign_10_mod_1.RData")
+
+# Create data directory if needed
+if (!dir.exists(data_dir)) {
+  dir.create(data_dir, recursive = TRUE)
+  cat("Created directory:", data_dir, "\n")
+}
+
+# Create WHAM model if data file doesn't exist
+if (!file.exists(data_file)) {
+  cat("Data file not found. Creating WHAM model from package data...\n\n")
+  
+  # Load example data from wham package
+  path_to_examples <- system.file("extdata", package = "wham")
+  asap3 <- read_asap3_dat(file.path(path_to_examples, "ex1_SNEMAYT.dat"))
+  
+  # Prepare WHAM input
+  input <- prepare_wham_input(
+    asap3,
+    recruit_model = 2,
+    model_name = "SNEMA Yellowtail",
+    selectivity = list(
+      model = rep("age-specific", 3),
+      re = rep("none", 3),
+      initial_pars = list(
+        c(0.5, 0.5, 0.5, 1, 1, 0.5),
+        c(0.5, 0.5, 0.5, 1, 0.5, 0.5),
+        c(0.5, 1, 1, 1, 0.5, 0.5)
+      ),
+      fix_pars = list(4:5, 4, 2:4)
+    ),
+    NAA_re = list(sigma = "rec", cor = "iid")
+  )
+  
+  # Fit WHAM model
+  cat("Fitting WHAM model (this may take a minute)...\n")
+  mod_1 <- fit_wham(input, do.osa = FALSE, do.retro = FALSE)
+  
+  # Save for future use
+  save(mod_1, file = data_file)
+  cat("Saved WHAM model to:", data_file, "\n\n")
+} else {
+  cat("Loading existing data file:", data_file, "\n\n")
+}
+
+load(data_file)
 
 # Get WHAM parameter estimates for comparison
 parList <- mod_1$parList

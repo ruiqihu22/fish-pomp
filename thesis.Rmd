@@ -160,6 +160,11 @@ Table: Biological parameters by age class. Weight-at-age and maturity-at-age are
 Figure 1 displays the observed time series of aggregate catch and survey index for SNEMA yellowtail flounder. The catch data show a declining trend from peaks in the 1970s and early 1980s, reflecting both reduced stock abundance and increasingly restrictive management measures. The survey index exhibits substantial interannual variability, typical of fishery-independent surveys, with an overall declining trend consistent with the catch observations.
 
 ```{r data-plot, echo=FALSE, fig.cap="Figure 1: Observed data for SNEMA yellowtail flounder (1973-2016). Top panel: aggregate catch in metric tons. Bottom panel: spring survey biomass index.", fig.height=6, fig.width=8}
+# Create data directory if needed
+if (!dir.exists("data")) {
+  dir.create("data", recursive = TRUE)
+}
+
 # Load or create WHAM model data
 wham_data_cached <- bake(file = "wham_data.rds", {
   path_to_examples <- system.file("extdata", package = "wham")
@@ -181,6 +186,14 @@ wham_data_cached <- bake(file = "wham_data.rds", {
     ),
     NAA_re = list(sigma = "rec", cor = "iid")
   )
+  
+  # Also fit and save the full WHAM model for other scripts
+  if (!file.exists("data/vign_10_mod_1.RData")) {
+    cat("Fitting WHAM model (this may take a minute)...\n")
+    mod_1 <- fit_wham(input, do.osa = FALSE, do.retro = FALSE)
+    save(mod_1, file = "data/vign_10_mod_1.RData")
+    cat("Saved WHAM model to data/vign_10_mod_1.RData\n")
+  }
   
   wham_data <- input$data
   list(
